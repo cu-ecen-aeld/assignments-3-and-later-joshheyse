@@ -4,9 +4,9 @@ writefile="$1"
 writestr="$2"
 
 if [ $# -lt 2 ]; then
-  echo "Using default value ${writestr} for string to write"
+  echo "Using default value ${writestr} for string to write to file"
   if [ $# -lt 1 ]; then
-    echo "Using default value ${writefile} for file to write"
+    echo "Using default value ${writefile} for file to write to"
   else
     writefile="$1"
   fi
