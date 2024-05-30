@@ -8,11 +8,11 @@ if [ $# -lt 2 ]; then
   if [ $# -lt 1 ]; then
     echo "Using default value ${writefile} for file to write"
   else
-    writefile=$1
+    writefile="$1"
   fi
 else
-  writefile=$1
-  writestr=$2
+  writefile="$1"
+  writestr="$2"
 fi
 
 mkdir -p "$(dirname "$writefile")"
