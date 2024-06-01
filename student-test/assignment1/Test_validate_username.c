@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 /**
+<<<<<<< HEAD
  * This function should:
  *   1) Call the my_username() function in autotest-validate.c to get your hard
  * coded username. 2) Obtain the value returned from function
