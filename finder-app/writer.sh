@@ -4,12 +4,8 @@ writefile="$1"
 writestr="$2"
 
 if [ $# -lt 2 ]; then
-  echo "Using default value ${writestr} for string to write to file"
-  if [ $# -lt 1 ]; then
-    echo "Using default value ${writefile} for file to write to"
-  else
-    writefile="$1"
-  fi
+  echo "Usage: $0 <file> <string>"
+  exit 1
 else
   writefile="$1"
   writestr="$2"
