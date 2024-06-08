@@ -50,5 +50,10 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,
   data->wait_to_obtain_ms = wait_to_obtain_ms;
   data->wait_to_release_ms = wait_to_release_ms;
   data->mutex = mutex;
-  return pthread_create(thread, NULL, threadfunc, data) == 0;
+  if (pthread_create(thread, NULL, threadfunc, data) != 0) {
+    ERROR_LOG("Failed to create thread");
+    free(data);
+    return false;
+  }
+  return true;
 }
