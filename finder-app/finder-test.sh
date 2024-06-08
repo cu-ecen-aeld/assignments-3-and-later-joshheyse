@@ -7,7 +7,7 @@ set -u
 
 NUMFILES=10
 WRITESTR=AELD_IS_FUN
-WRITEDIR=/tmp/aeld-data
+WRITEDIR=/tmp/assignment4-result.txt
 CONFDIR=conf
 
 if [[ -d /etc/finder-app/conf ]]; then
