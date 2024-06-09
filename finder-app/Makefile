@@ -1,10 +1,12 @@
-writer: writer.c
-	echo ${CROSS_COMPILE}
-	${CROSS_COMPILE}gcc -o writer writer.c -Wall -Werror
+SRC := writer.c
+TARGET = writer
+OBJS := $(SRC:.c=.o)
+CC = $(CROSS_COMPILE)gcc
 
-all: writer
+all: $(TARGET)
 
-.PHONY: clean
+$(TARGET) : $(OBJS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(OBJS) -o $(TARGET) $(LDFLAGS)
+
 clean:
-	rm -f writer
-	rm -f *.o
+	rm -f *.o $(TARGET) *.elf *.map
