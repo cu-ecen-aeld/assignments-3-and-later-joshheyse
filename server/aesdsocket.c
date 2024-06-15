@@ -74,7 +74,6 @@ void cleanUpAndExit(int status) {
 }
 
 void signal_handler(int signal) {
-  fprintf(stdout, "Caught signal, exiting");
   syslog(LOG_INFO, "Caught signal, exiting");
   should_exit = 1;
   if (!processing_packet) {
@@ -85,7 +84,6 @@ void signal_handler(int signal) {
 int write_buffer(int fd, char *buffer, int buffer_len) {
   int bytes_written = 0;
   while (bytes_written < buffer_len) {
-    printf("Writing %d bytes to %d\n", buffer_len - bytes_written, fd);
     int ret = write(fd, buffer + bytes_written, buffer_len - bytes_written);
     if (ret < 0) {
       return 0;
