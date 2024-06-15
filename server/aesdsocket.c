@@ -192,7 +192,7 @@ void deamonize(char *base_name) {
 int main(int argc, char *argv[]) {
 
   struct options options = {
-      .port = 0,
+      .port = 9000,
   };
   parseArgs(argc, argv, &options);
 
