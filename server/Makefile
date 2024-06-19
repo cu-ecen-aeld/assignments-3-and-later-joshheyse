@@ -6,6 +6,9 @@ CFLAGS ?= -Wall -Werror -g
 
 OBJS := $(SRC:.c=.o)
 
+$(info CROSS_COMPILE is $(CROSS_COMPILE))
+$(info CC is $(CC))
+
 all: $(TARGET)
 
 $(TARGET) : $(OBJS)
