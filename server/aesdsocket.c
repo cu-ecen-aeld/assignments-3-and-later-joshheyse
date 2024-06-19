@@ -1,7 +1,10 @@
+#include "queue.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <libgen.h>
 #include <netdb.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,16 +17,39 @@
 
 // global vars are ugly
 int server_fd;
-int accepted_fd;
 int file_fd;
 int should_exit = 0;
 int processing_packet = 0;
+pthread_t timer_thread;
+
+pthread_mutex_t file_lock;
 const char *file_path = "/tmp/aesdsocket";
 
 struct options {
   in_port_t port;
   int daemonize;
 };
+
+typedef struct connection slist_data_t;
+struct connection {
+  int fd;
+  struct sockaddr_in addr;
+  pthread_t thread_id;
+  int thread_complete;
+  SLIST_ENTRY(connection) entries;
+};
+
+SLIST_HEAD(connections_t, connection) connections;
+
+void mark_all_threads_complete(struct connections_t *head);
+void printUsage(char *argv[]);
+void parseArgs(int argc, char *argv[], struct options *options);
+void cleanUpAndExit(int status);
+int write_buffer(int fd, char *buffer, int buffer_len);
+void *handle_client_connection(void *arg);
+void deamonize(char *base_name);
+void mark_all_threads_complete(struct connections_t *head);
+void collect_complete_threads(struct connections_t *head);
 
 void printUsage(char *argv[]) {
   fprintf(stderr, "Usage: %s -d -p <port>\n", argv[0]);
@@ -53,11 +79,6 @@ void parseArgs(int argc, char *argv[], struct options *options) {
 void cleanUpAndExit(int status) {
   syslog(LOG_INFO, "Exiting with status %d", status);
 
-  if (accepted_fd > 0) {
-    close(server_fd);
-    accepted_fd = -1;
-  }
-
   if (server_fd > 0) {
     close(server_fd);
     server_fd = -1;
@@ -69,16 +90,18 @@ void cleanUpAndExit(int status) {
     file_fd = -1;
   }
 
+  should_exit = 1;
+  collect_complete_threads(&connections);
+
+  pthread_cancel(timer_thread);
+
   closelog();
   exit(status);
 }
 
 void signal_handler(int signal) {
   syslog(LOG_INFO, "Caught signal, exiting");
-  should_exit = 1;
-  if (!processing_packet) {
-    cleanUpAndExit(EXIT_SUCCESS);
-  }
+  cleanUpAndExit(EXIT_SUCCESS);
 }
 
 int write_buffer(int fd, char *buffer, int buffer_len) {
@@ -93,7 +116,8 @@ int write_buffer(int fd, char *buffer, int buffer_len) {
   return 1;
 }
 
-void handle_client_connection(int accepted_fd, struct sockaddr_in client_addr) {
+void *handle_client_connection(void *arg) {
+  struct connection *conn = (struct connection *)arg;
   char ip_address[16];
   char in_buffer[1024];
   int in_buffer_len = sizeof(in_buffer) - 1;
@@ -102,49 +126,69 @@ void handle_client_connection(int accepted_fd, struct sockaddr_in client_addr) {
   memset(in_buffer, 0, sizeof(in_buffer));
   memset(out_buffer, 0, sizeof(out_buffer));
 
-  inet_ntop(AF_INET, &client_addr.sin_addr, ip_address, sizeof(ip_address));
+  inet_ntop(AF_INET, &conn->addr.sin_addr, ip_address, sizeof(ip_address));
   syslog(LOG_INFO, "Accepted connection from %s", ip_address);
 
-  lseek(file_fd, 0, SEEK_END);
+  int flags = fcntl(conn->fd, F_GETFL, 0);
+  fcntl(conn->fd, F_SETFL, flags | O_NONBLOCK);
 
   ssize_t in_bytes_read = -1;
-  while (!should_exit && (in_bytes_read = read(accepted_fd, in_buffer, in_buffer_len)) > 0) {
-    processing_packet = 1;
-    in_buffer[in_bytes_read] = '\0';
+  while (!should_exit && (in_bytes_read = read(conn->fd, in_buffer, in_buffer_len)) != 0) {
+    if (in_bytes_read == -1) {
+      int res = errno;
+      if (res == EAGAIN || res == EWOULDBLOCK) {
+        usleep(1000000);
+        continue;
+      }
+    }
 
-    char *newline_char = in_buffer;
-    char *prev_newline_char = in_buffer;
-
-    while ((newline_char = strchr(prev_newline_char, '\n')) != NULL) {
-      if (!write_buffer(file_fd, prev_newline_char, newline_char - prev_newline_char + 1)) {
-        syslog(LOG_ERR, "Failed to write to file");
+    { // start file_lock
+      if (pthread_mutex_lock(&file_lock)) {
+        syslog(LOG_ERR, "Failed to lock file: %s", strerror(errno));
         cleanUpAndExit(EXIT_FAILURE);
       }
 
-      lseek(file_fd, 0, SEEK_SET);
-      ssize_t file_bytes_read = 0;
-      while ((file_bytes_read = read(file_fd, out_buffer, sizeof(out_buffer))) > 0) {
-        if (!write_buffer(accepted_fd, out_buffer, file_bytes_read)) {
-          syslog(LOG_ERR, "Failed to write to socket");
-          return;
-        }
-      }
+      in_buffer[in_bytes_read] = '\0';
+
       lseek(file_fd, 0, SEEK_END);
-      prev_newline_char = newline_char + 1;
-    }
 
-    if (!write_buffer(file_fd, prev_newline_char, in_bytes_read - (prev_newline_char - in_buffer))) {
-      syslog(LOG_ERR, "Failed to write to file");
-      cleanUpAndExit(EXIT_FAILURE);
-    }
+      char *newline_char = in_buffer;
+      char *prev_newline_char = in_buffer;
 
-    processing_packet = 0;
+      while ((newline_char = strchr(prev_newline_char, '\n')) != NULL) {
+        write_buffer(file_fd, prev_newline_char, newline_char - prev_newline_char + 1);
+
+        lseek(file_fd, 0, SEEK_SET);
+        ssize_t file_bytes_read = 0;
+        while ((file_bytes_read = read(file_fd, out_buffer, sizeof(out_buffer))) > 0) {
+          if (!write_buffer(conn->fd, out_buffer, file_bytes_read)) {
+            syslog(LOG_ERR, "Failed to write to socket");
+            close(conn->fd);
+            conn->thread_complete = 1;
+            return NULL;
+          }
+        }
+        prev_newline_char = newline_char + 1;
+      }
+
+      lseek(file_fd, 0, SEEK_END);
+      write_buffer(file_fd, prev_newline_char, in_bytes_read - (prev_newline_char - in_buffer));
+
+      if (pthread_mutex_unlock(&file_lock)) {
+        syslog(LOG_ERR, "Failed to unlock file: %s", strerror(errno));
+        cleanUpAndExit(EXIT_FAILURE);
+      }
+    } // end file_lock
   }
 
   if (in_bytes_read < 0) {
     syslog(LOG_ERR, "Failed to read from socket");
   }
   syslog(LOG_INFO, "Connection closed from %s", ip_address);
+
+  close(conn->fd);
+  conn->thread_complete = 1;
+  return NULL;
 }
 
 void deamonize(char *base_name) {
@@ -185,6 +229,55 @@ void deamonize(char *base_name) {
   closelog();
   openlog(base_name, LOG_PID, LOG_DAEMON);
   setlogmask(LOG_UPTO(LOG_INFO));
+}
+
+void mark_all_threads_complete(struct connections_t *head) {
+  struct connection *conn;
+  SLIST_FOREACH(conn, head, entries) { conn->thread_complete = 1; }
+}
+
+void collect_complete_threads(struct connections_t *head) {
+  struct connection *conn;
+  SLIST_FOREACH(conn, head, entries) {
+    if (conn->thread_complete) {
+      syslog(LOG_INFO, "Joining thread %lu", conn->thread_id);
+      pthread_join(conn->thread_id, NULL);
+      SLIST_REMOVE(head, conn, connection, entries);
+      free(conn);
+    }
+  }
+}
+
+void *timer(void *arg) {
+  char out_buffer[64];
+  const char preamble[] = "timestamp:";
+  strcpy(out_buffer, preamble);
+  char *timestamp = out_buffer + sizeof(preamble) - 1;
+
+  while (!should_exit) {
+    syslog(LOG_INFO, "Timer tick");
+    time_t now = time(NULL);
+    struct tm *now_tm = localtime(&now);
+    int ret = strftime(timestamp, sizeof(out_buffer) - sizeof(preamble) - 1, "%Y-%m-%d %H:%M:%S\n", now_tm);
+    if (ret == 0) {
+      syslog(LOG_ERR, "Failed to format time %s", strerror(errno));
+    }
+
+    { // start file_lock
+      if (pthread_mutex_lock(&file_lock)) {
+        syslog(LOG_ERR, "Failed to lock file: %s", strerror(errno));
+        cleanUpAndExit(EXIT_FAILURE);
+      }
+      write(file_fd, out_buffer, strlen(out_buffer));
+      if (pthread_mutex_unlock(&file_lock)) {
+        syslog(LOG_ERR, "Failed to lock file: %s", strerror(errno));
+        cleanUpAndExit(EXIT_FAILURE);
+      }
+    } // end file_lock
+
+    sleep(10);
+  }
+  return NULL;
 }
 
 int main(int argc, char *argv[]) {
@@ -243,22 +336,31 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
 
-  while (!should_exit) {
+  struct connection *conn;
+  SLIST_INIT(&connections);
 
-    fprintf(stdout, "Waiting for connection on port %d\n", options.port);
+  pthread_create(&timer_thread, NULL, &timer, NULL);
+
+  fprintf(stdout, "Waiting for connection on port %d\n", options.port);
+
+  while (!should_exit) {
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
 
-    accepted_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
+    int accepted_fd = accept(server_fd, (struct sockaddr *)&client_addr, &client_addr_len);
     if (accepted_fd < 0) {
       syslog(LOG_ERR, "Failed to accept connection");
       continue;
     }
 
-    handle_client_connection(accepted_fd, client_addr);
+    conn = malloc(sizeof(struct connection));
+    conn->fd = accepted_fd;
+    conn->addr = client_addr;
+    conn->thread_complete = 0;
+    pthread_create(&conn->thread_id, NULL, &handle_client_connection, conn);
+    SLIST_INSERT_HEAD(&connections, conn, entries);
 
-    close(accepted_fd);
-    accepted_fd = -1;
+    collect_complete_threads(&connections);
   }
 
   cleanUpAndExit(EXIT_SUCCESS);
