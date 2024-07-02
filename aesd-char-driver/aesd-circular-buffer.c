@@ -11,7 +11,6 @@
 #ifdef __KERNEL__
 #include <linux/string.h>
 #else
-#include <stdio.h>
 #include <string.h>
 #endif
 
