@@ -10,6 +10,7 @@ else
 endif
 
 EXTRA_CFLAGS += $(DEBFLAGS)
+ccflags-y := -std=gnu99 -Wno-declaration-after-statement
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
