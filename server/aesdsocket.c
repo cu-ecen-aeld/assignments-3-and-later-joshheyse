@@ -15,6 +15,10 @@
 #include <syslog.h>
 #include <unistd.h>
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+
 // global vars are ugly
 int server_fd;
 int file_fd;
@@ -23,7 +27,11 @@ int processing_packet = 0;
 pthread_t timer_thread;
 
 pthread_mutex_t file_lock;
+#if USE_AESD_CHAR_DEVICE
+const char *file_path = "/dev/aesdchar";
+#else
 const char *file_path = "/tmp/aesdsocket";
+#endif
 
 struct options {
   in_port_t port;
@@ -339,7 +347,9 @@ int main(int argc, char *argv[]) {
   struct connection *conn;
   SLIST_INIT(&connections);
 
+#if USE_AESD_CHAR_DEVICE == 0
   pthread_create(&timer_thread, NULL, &timer, NULL);
+#endif
 
   fprintf(stdout, "Waiting for connection on port %d\n", options.port);
 
