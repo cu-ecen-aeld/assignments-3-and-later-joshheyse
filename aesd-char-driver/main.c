@@ -68,15 +68,22 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
     goto out;
   }
 
-  retval = copy_to_user(buf, entry->buffptr + entry_offset_byte_rtn, min(entry->size - entry_offset_byte_rtn, count));
+  ssize_t bytes_to_copy = min(entry->size - entry_offset_byte_rtn, count);
+  if (bytes_to_copy == 0) {
+    retval = 0;
+    goto out;
+  }
+
+  PDEBUG("read: copying %zu bytes", bytes_to_copy);
+  retval = copy_to_user(buf, entry->buffptr + entry_offset_byte_rtn, bytes_to_copy);
   if (retval) {
     PDEBUG("read: copy_to_user failed");
     retval = -EFAULT;
     goto out;
   }
+  retval = bytes_to_copy;
 
   if (count >= entry->size - entry_offset_byte_rtn) {
-    dev->circular_buffer.out_offs = (dev->circular_buffer.out_offs + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
     *f_pos += entry->size - entry_offset_byte_rtn;
   } else {
     *f_pos += count;
@@ -84,6 +91,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count, loff_t *f_p
 
 out:
   mutex_unlock(&dev->lock);
+  PDEBUG("read: returning %zd", retval);
   return retval;
 }
 
@@ -93,19 +101,32 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
   struct aesd_dev *dev = filp->private_data;
   // Store a pointer to the entire allocated buffer in buffer and use working as a span (pointer + size)
   struct aesd_buffer_entry working;
-  void *buffer = kmalloc(dev->partial.size + count, GFP_KERNEL);
+  ssize_t combined_count = dev->partial.size + count;
+  PDEBUG("write: combined count %zu", combined_count);
+  void *buffer = kmalloc(combined_count, GFP_KERNEL);
   void *new_line_ptr = NULL;
   working.buffptr = buffer;
-  working.size = count;
+  working.size = combined_count;
+
   if (working.buffptr == NULL) {
     PDEBUG("write: kmalloc failed");
     goto out;
   }
 
-  if (copy_from_user((void *)working.buffptr, buf, count)) {
+  if (dev->partial.buffptr != NULL) {
+    memcpy((void *)working.buffptr, dev->partial.buffptr, dev->partial.size);
+  }
+
+  if (copy_from_user((void *)working.buffptr + dev->partial.size, buf, count)) {
     PDEBUG("write: copy_from_user failed");
     goto out;
     retval = -EFAULT;
+  }
+
+  if (dev->partial.buffptr != NULL) {
+    kfree_const(dev->partial.buffptr);
+    dev->partial.buffptr = NULL;
+    dev->partial.size = 0;
   }
 
   if (mutex_lock_interruptible(&dev->lock)) {
@@ -116,22 +137,35 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count, loff
 
   new_line_ptr = memchr(working.buffptr, '\n', working.size);
   while (working.size > 0 && new_line_ptr != NULL) {
-    PDEBUG("loop start");
     size_t bytes_to_copy = new_line_ptr - (void *)working.buffptr + 1;
     struct aesd_buffer_entry *entry = kmalloc(sizeof(struct aesd_buffer_entry), GFP_KERNEL);
     entry->buffptr = kmemdup(working.buffptr, bytes_to_copy, GFP_KERNEL);
-    PDEBUG("copied start");
     if (entry->buffptr == NULL) {
       PDEBUG("write: kmemdup failed");
       retval = -EINVAL;
       goto release;
     }
     entry->size = bytes_to_copy;
-    aesd_circular_buffer_add_entry(&dev->circular_buffer, entry);
+    PDEBUG("write: adding entry %zu bytes", bytes_to_copy);
+    const char *garbage = aesd_circular_buffer_add_entry(&dev->circular_buffer, entry);
+    if (garbage != NULL) {
+      kfree_const(garbage);
+    }
     working.size -= bytes_to_copy;
     working.buffptr += bytes_to_copy;
     new_line_ptr = memchr(working.buffptr, '\n', working.size);
   }
+
+  if (working.size > 0) {
+    PDEBUG("write: partial write %zu bytes", working.size);
+    dev->partial.buffptr = kmemdup(working.buffptr, working.size, GFP_KERNEL);
+    if (dev->partial.buffptr == NULL) {
+      retval = -ENOMEM;
+      goto release;
+    }
+    dev->partial.size = working.size;
+  }
+  retval = count;
 
 release:
   mutex_unlock(&dev->lock);
@@ -140,6 +174,7 @@ out:
   if (buffer != NULL) {
     kfree_const(buffer);
   }
+  PDEBUG("write: returning %zd", retval);
   return retval;
 }
 

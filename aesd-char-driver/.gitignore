@@ -7,3 +7,5 @@
 linux_source_cdt
 *.mod
 build
+compile_commands.json
+.cache
