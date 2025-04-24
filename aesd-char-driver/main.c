@@ -181,6 +181,7 @@ static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
 
   PDEBUG("llseek %lld %d", offset, whence);
   if (mutex_lock_interruptible(&dev->lock)) {
+    PDEBUG("llseek: lock failed");
     return -ERESTARTSYS;
   }
 
@@ -190,42 +191,50 @@ static loff_t aesd_llseek(struct file *filp, loff_t offset, int whence) {
   }
 
   new_pos = fixed_size_llseek(filp, offset, whence, totalSize);
-  PDEBUG("llseek %lld %d -> %lld", offset, whence, new_pos);
+  PDEBUG("llseek %lld %d %lld -> %lld", offset, whence, totalSize, new_pos);
+
+  filp->f_pos = new_pos;
   mutex_unlock(&dev->lock);
   return new_pos;
 }
 
 static long aesd_adjust_file_offset(struct file *filp, struct aesd_seekto *seekto) {
   struct aesd_dev *dev = filp->private_data;
-  loff_t retval = -EINVAL;
   int i;
 
+  PDEBUG("aesd adjust_file_offset %d %d", seekto->write_cmd, seekto->write_cmd_offset);
   if (seekto->write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+    PDEBUG("write_cmd %d out of range", seekto->write_cmd);
     return -EINVAL;
   }
 
   if (mutex_lock_interruptible(&dev->lock)) {
+    PDEBUG("adjust_file_offset: lock failed");
     return -ERESTARTSYS;
   }
 
+  loff_t pos = 0;
   for (i = 0; i < seekto->write_cmd; i++) {
-    retval += dev->circular_buffer.entry[i].size;
+    pos +=
+        dev->circular_buffer.entry[(dev->circular_buffer.out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size;
   }
-  if (seekto->write_cmd_offset > dev->circular_buffer.entry[i].size) {
-    retval = -EINVAL;
-    goto out;
+  if (seekto->write_cmd_offset >
+      dev->circular_buffer.entry[(dev->circular_buffer.out_offs + i) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED].size) {
+    PDEBUG("write_cmd_offset %d out of range", seekto->write_cmd_offset);
+    mutex_unlock(&dev->lock);
+    return -EINVAL;
   }
-  retval += seekto->write_cmd_offset;
 
-  filp->f_pos = retval;
-
-out:
   mutex_unlock(&dev->lock);
-  return retval;
+
+  pos += seekto->write_cmd_offset;
+  PDEBUG("adjust_file_offset: %d %d -> %lld", seekto->write_cmd, seekto->write_cmd_offset, pos);
+  filp->f_pos = pos;
+  return 0;
 }
 
 static long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg) {
-  PDEBUG("ioctl");
+  PDEBUG("ioctl %d", cmd);
   if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) {
     return -ENOTTY;
   }

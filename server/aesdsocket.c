@@ -35,6 +35,8 @@ const char *file_path = "/dev/aesdchar";
 const char *file_path = "/tmp/aesdsocket";
 #endif
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 struct options {
   in_port_t port;
   int daemonize;
@@ -49,17 +51,17 @@ struct connection {
   SLIST_ENTRY(connection) entries;
 };
 
+pthread_mutex_t connections_lock;
 SLIST_HEAD(connections_t, connection) connections;
 
-void mark_all_threads_complete(struct connections_t *head);
 void printUsage(char *argv[]);
 void parseArgs(int argc, char *argv[], struct options *options);
 void cleanUpAndExit(int status);
 int write_buffer(int fd, char *buffer, int buffer_len);
 void *handle_client_connection(void *arg);
 void deamonize(char *base_name);
-void mark_all_threads_complete(struct connections_t *head);
-void collect_complete_threads(struct connections_t *head);
+void mark_all_threads_complete(struct connections_t *connections);
+void collect_complete_threads(struct connections_t *connections);
 
 void printUsage(char *argv[]) {
   fprintf(stderr, "Usage: %s -d -p <port>\n", argv[0]);
@@ -160,27 +162,31 @@ void *handle_client_connection(void *arg) {
 
       in_buffer[in_bytes_read] = '\0';
 
-      lseek(file_fd, 0, SEEK_END);
+      /* lseek(file_fd, 0, SEEK_END); */
 
       char *newline_char = in_buffer;
       char *prev_newline_char = in_buffer;
 
       while ((newline_char = strchr(prev_newline_char, '\n')) != NULL) {
+        int length = newline_char - prev_newline_char + 1;
+        syslog(LOG_INFO, "Received %*.*s", length, length, prev_newline_char);
         struct aesd_seekto seekto;
-        if (sscanf(prev_newline_char, "AESDCHAR_IOCSEEKTO:%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
-          if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
-            syslog(LOG_ERR, "Failed to seek to %d %d", seekto.write_cmd, seekto.write_cmd_offset);
-            pthread_mutex_unlock(&file_lock);
-            close(conn->fd);
-            conn->thread_complete = 1;
-            return NULL;
+        if (strncmp(prev_newline_char, "AESDCHAR_IOCSEEKTO", MIN(length, 18)) == 0) {
+          if (sscanf(prev_newline_char, "AESDCHAR_IOCSEEKTO:%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+            if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+              syslog(LOG_ERR, "Failed to seek to %d %d", seekto.write_cmd, seekto.write_cmd_offset);
+              pthread_mutex_unlock(&file_lock);
+              close(conn->fd);
+              conn->thread_complete = 1;
+              return NULL;
+            }
           }
-          prev_newline_char = newline_char + 1;
-          continue;
+        } else {
+          write_buffer(file_fd, prev_newline_char, length);
+          fdatasync(file_fd);
+          lseek(file_fd, 0, SEEK_SET);
         }
-        write_buffer(file_fd, prev_newline_char, newline_char - prev_newline_char + 1);
 
-        lseek(file_fd, 0, SEEK_SET);
         ssize_t file_bytes_read = 0;
         while ((file_bytes_read = read(file_fd, out_buffer, sizeof(out_buffer))) > 0) {
           if (!write_buffer(conn->fd, out_buffer, file_bytes_read)) {
@@ -193,8 +199,8 @@ void *handle_client_connection(void *arg) {
         prev_newline_char = newline_char + 1;
       }
 
-      lseek(file_fd, 0, SEEK_END);
-      write_buffer(file_fd, prev_newline_char, in_bytes_read - (prev_newline_char - in_buffer));
+      /* lseek(file_fd, 0, SEEK_END); */
+      /* write_buffer(file_fd, prev_newline_char, in_bytes_read - (prev_newline_char - in_buffer)); */
 
       if (pthread_mutex_unlock(&file_lock)) {
         syslog(LOG_ERR, "Failed to unlock file: %s", strerror(errno));
@@ -253,21 +259,26 @@ void deamonize(char *base_name) {
   setlogmask(LOG_UPTO(LOG_INFO));
 }
 
-void mark_all_threads_complete(struct connections_t *head) {
+void mark_all_threads_complete(struct connections_t *connections) {
   struct connection *conn;
-  SLIST_FOREACH(conn, head, entries) { conn->thread_complete = 1; }
+  pthread_mutex_lock(&connections_lock);
+  SLIST_FOREACH(conn, connections, entries) { conn->thread_complete = 1; }
+  pthread_mutex_unlock(&connections_lock);
 }
 
-void collect_complete_threads(struct connections_t *head) {
+void collect_complete_threads(struct connections_t *connections) {
   struct connection *conn;
-  SLIST_FOREACH(conn, head, entries) {
+
+  pthread_mutex_lock(&connections_lock);
+  SLIST_FOREACH(conn, connections, entries) {
     if (conn->thread_complete) {
       syslog(LOG_INFO, "Joining thread %lu", conn->thread_id);
       pthread_join(conn->thread_id, NULL);
-      SLIST_REMOVE(head, conn, connection, entries);
+      SLIST_REMOVE(connections, conn, connection, entries);
       free(conn);
     }
   }
+  pthread_mutex_unlock(&connections_lock);
 }
 
 void *timer(void *arg) {
@@ -381,8 +392,17 @@ int main(int argc, char *argv[]) {
     conn->fd = accepted_fd;
     conn->addr = client_addr;
     conn->thread_complete = 0;
-    pthread_create(&conn->thread_id, NULL, &handle_client_connection, conn);
+
+    if (pthread_create(&conn->thread_id, NULL, &handle_client_connection, conn) != 0) {
+      syslog(LOG_ERR, "Failed to create thread");
+      free(conn);
+      close(accepted_fd);
+      continue;
+    }
+
+    pthread_mutex_lock(&connections_lock);
     SLIST_INSERT_HEAD(&connections, conn, entries);
+    pthread_mutex_unlock(&connections_lock);
 
     collect_complete_threads(&connections);
   }
