@@ -14,8 +14,8 @@
 #include <asm-generic/ioctl.h>
 #include <linux/types.h>
 #else
-#include <sys/ioctl.h>
 #include <stdint.h>
+#include <sys/ioctl.h>
 #endif
 
 /**
@@ -23,18 +23,19 @@
  * of seek performed on the aesdchar driver
  */
 struct aesd_seekto {
-    /**
-     * The zero referenced write command to seek into
-     */
-    uint32_t write_cmd;
-    /**
-     * The zero referenced offset within the write
-     */
-    uint32_t write_cmd_offset;
+  /**
+   * The zero referenced write command to seek into
+   */
+  uint32_t write_cmd;
+  /**
+   * The zero referenced offset within the write
+   */
+  uint32_t write_cmd_offset;
 };
 
-// Pick an arbitrary unused value from https://github.com/torvalds/linux/blob/master/Documentation/userspace-api/ioctl/ioctl-number.rst
-#define AESD_IOC_MAGIC 0x16
+// Pick an arbitrary unused value from
+// https://github.com/torvalds/linux/blob/master/Documentation/userspace-api/ioctl/ioctl-number.rst
+#define AESD_IOC_MAGIC 0x74
 
 // Define a write command from the user point of view, use command number 1
 #define AESDCHAR_IOCSEEKTO _IOWR(AESD_IOC_MAGIC, 1, struct aesd_seekto)
