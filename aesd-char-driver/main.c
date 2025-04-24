@@ -251,7 +251,7 @@ struct file_operations aesd_fops = {.owner = THIS_MODULE,
                                     .open = aesd_open,
                                     .release = aesd_release,
                                     .llseek = aesd_llseek,
-                                    .compat_ioctl = aesd_ioctl};
+                                    .unlocked_ioctl = aesd_ioctl};
 
 static int aesd_setup_cdev(struct aesd_dev *dev) {
   int err, devno = MKDEV(aesd_major, aesd_minor);

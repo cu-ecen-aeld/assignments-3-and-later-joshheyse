@@ -1,3 +1,4 @@
+#include "aesd_ioctl.h"
 #include "queue.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -164,6 +166,18 @@ void *handle_client_connection(void *arg) {
       char *prev_newline_char = in_buffer;
 
       while ((newline_char = strchr(prev_newline_char, '\n')) != NULL) {
+        struct aesd_seekto seekto;
+        if (sscanf(prev_newline_char, "AESDCHAR_IOCSEEKTO:%d,%d", &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+          if (ioctl(file_fd, AESDCHAR_IOCSEEKTO, &seekto) < 0) {
+            syslog(LOG_ERR, "Failed to seek to %d %d", seekto.write_cmd, seekto.write_cmd_offset);
+            pthread_mutex_unlock(&file_lock);
+            close(conn->fd);
+            conn->thread_complete = 1;
+            return NULL;
+          }
+          prev_newline_char = newline_char + 1;
+          continue;
+        }
         write_buffer(file_fd, prev_newline_char, newline_char - prev_newline_char + 1);
 
         lseek(file_fd, 0, SEEK_SET);
