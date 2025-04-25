@@ -25,6 +25,10 @@
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
 
+#ifndef GIT_HASH
+#define GIT_HASH "N/A"
+#endif
+
 MODULE_AUTHOR("Josh Heyse");
 MODULE_LICENSE("Dual BSD/GPL");
 
@@ -284,7 +288,7 @@ int aesd_init_module(void) {
     printk(KERN_WARNING "Can't get major %d\n", aesd_major);
     return result;
   }
-  PDEBUG("\n\n\naesd_init_module: major %d\n", aesd_major);
+  PDEBUG("\n\n\naesd_init_module: major %d %s \n", aesd_major, GIT_HASH);
   memset(&aesd_device, 0, sizeof(struct aesd_dev));
 
   mutex_init(&aesd_device.lock);

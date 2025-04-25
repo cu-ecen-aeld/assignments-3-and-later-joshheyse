@@ -21,6 +21,11 @@
 #define USE_AESD_CHAR_DEVICE 1
 #endif
 
+#ifndef GIT_HASH
+
+#define GIT_HASH "N/A"
+#endif
+
 // global vars are ugly
 int server_fd;
 int file_fd;
@@ -321,7 +326,8 @@ int main(int argc, char *argv[]) {
   parseArgs(argc, argv, &options);
 
   char *base_name = basename(argv[0]);
-  fprintf(stdout, "Starting %s\n", base_name);
+  fprintf(stdout, "Starting %s %s \n", base_name, GIT_HASH);
+  syslog(LOG_INFO, "Starting %s %s \n", base_name, GIT_HASH);
   openlog(base_name, LOG_PID, LOG_USER);
   setlogmask(LOG_UPTO(LOG_INFO));
 
